@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minimal UI</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/2.1.3/marked.min.js"></script>
+    <style>
+        .spinner {
+            border: 2px solid transparent;
+            border-top: 2px solid white;
+            border-radius: 50%;
+            width: 16px;
+            height: 16px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-6">
+
+<div class="max-w-xl mx-auto">
+    <div class="mb-6 text-center">
+        <h1 class="text-4xl font-bold text-gray-800">MLX ParaLLM Document Summarizer</h1>
+        <p class="text-lg text-gray-600 mt-2">
+            A minimal UI for parallel inferencing for long document summaries based on
+            <a href="https://github.com/willccbb/mlx_parallm" target="_blank" class="text-blue-500 underline">MLX ParaLLM</a>.<br>
+            <a href="https://github.com/do-me/mlx_parallm_ui" target="_blank" class="text-blue-500 underline">GitHub repo here</a>.
+            The heuristic implemented here chunks the text, creates summaries and adds the summaries to a new prompt. 
+            Processing many prompts at once leads to higher throughput (tokens/s) on Apple Silicon.
+            See <a href="https://github.com/do-me/mlx_parallm/blob/main/benchmark/benchmark.ipynb" target="_blank" class="text-blue-500 underline">benchmarks</a> and 
+            <a href="https://twitter.com/DomeGIS/status/1808012696538751098" target="_blank" class="text-blue-500 underline">tweet</a>.
+        </p>
+    </div>
+
+    <!-- Model Selection Dropdown -->
+    <div class="mb-6">
+        <label for="model-select" class="block text-base font-medium text-gray-800 mb-2">Select Model</label>
+        <select id="model-select" class="w-full px-4 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-blue-500">
+            <option value="mlx-community/Meta-Llama-3-8B-Instruct-4bit">Meta-Llama-3-8B-Instruct-4bit</option>
+            <option value="mlx-community/Phi-3-mini-4k-instruct-4bit">Phi-3-mini-4k-instruct-4bit</option>
+            <option value="mlx-community/gemma-1.1-2b-it-4bit">gemma-1.1-2b-it-4bit</option>
+        </select>
+    </div>
+
+    <!-- Range Input -->
+    <div class="mb-6">
+        <label for="range-input" class="block text-base font-medium text-gray-800 mb-2">Text Splitter Range</label>
+        <input id="range-input-lower" type="number" class="w-full px-4 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-blue-500" placeholder="Lower value (e.g., 1500)" value="1500">
+        <input id="range-input-upper" type="number" class="w-full px-4 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-blue-500 mt-2" placeholder="Upper value (e.g., 2000)" value="2000">
+    </div>
+
+    <!-- Text Input Field -->
+    <div class="mb-6">
+        <label for="feedback" class="block text-base font-medium text-gray-800 mb-2">Paste text to analyze</label>
+        <textarea id="feedback" rows="5" class="w-full px-4 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-blue-500">
+I like apples. I see them, I eat them. Then I write down the taste and a score between 1 and 10.
+        </textarea>
+    </div>
+
+    <!-- Submit Button -->
+    <button id="submit-button" type="button" class="bg-blue-500 text-white px-6 py-3 rounded-md focus:outline-none">
+        Process
+    </button>
+
+    <!-- Response Container -->
+    <div id="response-container" class="mt-6"></div>
+
+    <!-- Time Display -->
+    <div id="time-taken" class="mt-4 text-sm text-gray-800"></div>
+</div>
+<script>
+    window.onload = function() {
+        const submitButton = document.getElementById('submit-button');
+        submitButton.addEventListener('click', function () {
+            const context = document.getElementById('feedback').value;
+            const selectedModel = document.getElementById('model-select').value;
+            const rangeLower = parseInt(document.getElementById('range-input-lower').value);
+            const rangeUpper = parseInt(document.getElementById('range-input-upper').value);
+
+            const data = {
+                model: selectedModel,
+                context: context,
+                range: [rangeLower, rangeUpper]
+            };
+
+            const startTime = new Date().getTime();
+
+            submitButton.disabled = true;
+            submitButton.innerHTML = `<div class="spinner"></div> Processing...`;
+
+            fetch('http://localhost:8000/process_data', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(data),
+            })
+            .then(response => response.json())
+            .then(data => {
+                const requestId = data.request_id;
+                console.log(`Received request_id: ${requestId}`);
+                const responseContainer = document.getElementById('response-container');
+                responseContainer.innerHTML = '';
+
+                // Create a single div to hold the response text
+                const responseElement = document.createElement('div');
+                responseElement.classList.add('mt-4', 'text-sm', 'text-gray-800');
+                responseContainer.appendChild(responseElement);
+                
+                const eventSource = new EventSource(`http://localhost:8000/stream/${requestId}`);
+                eventSource.onmessage = function(event) {
+                    const token = event.data;
+                    if (token.startsWith('[ERROR]')) {
+                        responseElement.textContent = token;
+                        eventSource.close();
+                        submitButton.disabled = false;
+                        submitButton.innerHTML = 'Process';
+                        return;
+                    }
+                    responseElement.textContent += token;
+                };
+
+                eventSource.onerror = function() {
+                    eventSource.close();
+                    submitButton.disabled = false;
+                    submitButton.innerHTML = 'Process';
+                    const endTime = new Date().getTime();
+                    const timeTaken = endTime - startTime;
+                    document.getElementById('time-taken').textContent = `Time taken: ${timeTaken} ms`;
+                };
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                submitButton.disabled = false;
+                submitButton.innerHTML = 'Process';
+            });
+        });
+    }
+</script>
+
+</body>
+</html>
